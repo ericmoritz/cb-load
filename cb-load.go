@@ -15,6 +15,7 @@ type Report struct {
      elapsedMS int64
      err error
      timestamp int64
+     op string
 }
 
 type Options struct {
@@ -25,6 +26,8 @@ type Options struct {
      poolsize int
      actors int
      forever bool
+     readEvery int64
+     writeEvery int64
 }
 
 func makeObjectVal(objectSize int64) []byte {
@@ -35,24 +38,39 @@ func makeObjectVal(objectSize int64) []byte {
      return data;
 }
     
+func doAction(i int64, every int64) bool {
+     return every > 0 && i % every == 0
+}
 
 func actor(jobStart int64, objectVal []byte, bucket *couchbase.Bucket, o Options, out chan Report) {
     var i int64
     var err error
+    var start int64
+    var end int64
     keepGoing := true
+    
 
     for ; keepGoing ; {
       for i = 0; i < o.iterations; i++ {
           key := strconv.FormatInt(i, 10)
-          start := time.Now().UnixNano()
+	  doRead := doAction(i, o.readEvery)
+	  doWrite := doAction(i, o.writeEvery)
   
-  	// do work
-  	err = bucket.SetRaw(key, 0, objectVal)
-  	if err == nil {
-  	   _, err = bucket.GetRaw(key)
-  	}
-  	end := time.Now().UnixNano()
-          out <- Report{false, end-start, err, end-jobStart}
+	  // do work
+	  if doWrite {
+            start = time.Now().UnixNano()
+    	    err = bucket.SetRaw(key, 0, objectVal)
+            end = time.Now().UnixNano()
+            out <- Report{false, end-start, err, end-jobStart, "write"}
+          }
+
+  	  if doRead {
+            start = time.Now().UnixNano()
+  	    _, err = bucket.GetRaw(key)
+            end = time.Now().UnixNano()
+            out <- Report{false, end-start, err, end-jobStart, "read"}
+  	  }
+
       }
 
       if !o.forever {
@@ -60,7 +78,7 @@ func actor(jobStart int64, objectVal []byte, bucket *couchbase.Bucket, o Options
       }
 
     }
-    out <- Report{true, -1, nil, -1}
+    out <- Report{true, -1, nil, -1, ""}
 }
 
 func parseOptions() Options {
@@ -72,6 +90,8 @@ func parseOptions() Options {
      flag.IntVar(&o.actors, "actors", 1, "Size of the object to store")
      flag.IntVar(&o.poolsize, "poolsize", 4, "Size of the object to store")
      flag.BoolVar(&o.forever, "forever", false, "run forever")
+     flag.Int64Var(&o.readEvery, "readEvery", 1, "read for every X iterations")
+     flag.Int64Var(&o.writeEvery, "writeEvery", 1, "read for every X iterations")
      flag.Parse()
      return o;
 }
@@ -89,7 +109,7 @@ func printReportLn(report Report) {
       } else {
          fmt.Printf(",")
       }
-      fmt.Printf("%d\n", report.timestamp)
+      fmt.Printf("%d, %s\n", report.timestamp, report.op)
     }
 }
 
