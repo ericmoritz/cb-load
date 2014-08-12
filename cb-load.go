@@ -24,6 +24,7 @@ type Options struct {
      iterations int64
      poolsize int
      actors int
+     forever bool
 }
 
 func makeObjectVal(objectSize int64) []byte {
@@ -38,17 +39,26 @@ func makeObjectVal(objectSize int64) []byte {
 func actor(jobStart int64, objectVal []byte, bucket *couchbase.Bucket, o Options, out chan Report) {
     var i int64
     var err error
-    for i = 0; i < o.iterations; i++ {
-        key := strconv.FormatInt(i, 10)
-        start := time.Now().UnixNano()
+    keepGoing := true
 
-	// do work
-	err = bucket.SetRaw(key, 0, objectVal)
-	if err == nil {
-	   _, err = bucket.GetRaw(key)
-	}
-	end := time.Now().UnixNano()
-        out <- Report{false, end-start, err, end-jobStart}
+    for ; keepGoing ; {
+      for i = 0; i < o.iterations; i++ {
+          key := strconv.FormatInt(i, 10)
+          start := time.Now().UnixNano()
+  
+  	// do work
+  	err = bucket.SetRaw(key, 0, objectVal)
+  	if err == nil {
+  	   _, err = bucket.GetRaw(key)
+  	}
+  	end := time.Now().UnixNano()
+          out <- Report{false, end-start, err, end-jobStart}
+      }
+
+      if !o.forever {
+         keepGoing = false
+      }
+
     }
     out <- Report{true, -1, nil, -1}
 }
@@ -61,6 +71,7 @@ func parseOptions() Options {
      flag.Int64Var(&o.iterations, "iterations", 100000, "Size of the object to store")
      flag.IntVar(&o.actors, "actors", 1, "Size of the object to store")
      flag.IntVar(&o.poolsize, "poolsize", 4, "Size of the object to store")
+     flag.BoolVar(&o.forever, "forever", false, "run forever")
      flag.Parse()
      return o;
 }
