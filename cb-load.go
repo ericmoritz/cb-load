@@ -2,13 +2,15 @@ package main
 
 import (
        "runtime"
+       "math/rand"
        "fmt"
        "flag"
        "log"
        "time"
-       "strconv"
        "github.com/couchbaselabs/go-couchbase"
 )
+
+type Worker func(string) error
 
 type Report struct {
      done bool
@@ -22,14 +24,16 @@ type Options struct {
      url string
      bucket string
      objectSize int64
-     iterations int64
+     keyspace int64
      poolsize int
      actors int64
-     forever bool
-     readEvery int64
-     writeEvery int64
-     incrEvery int64
+     duration int64
+     readCount int64
+     writeCount int64
+     incrCount int64
+     casCount int64
      quiet bool
+     fillBucket bool
 }
 
 func makeObjectVal(objectSize int64) []byte {
@@ -44,58 +48,63 @@ func doAction(i int64, every int64) bool {
      return every > 0 && i % every == 0
 }
 
-func actor(jobStart int64, objectVal []byte, bucket *couchbase.Bucket, o Options, out chan Report) {
+func doWork(kind string, key string, worker Worker) Report {
+ start := time.Now().UnixNano()
+ err := worker(key)
+ end := time.Now().UnixNano()
+ return Report{false, end-start, err, end, kind}
+}
+
+func sendReport(o Options, out chan Report, report Report) {
+   if !o.quiet {
+     out <- report;
+   }
+}
+
+func doWorkAndSendReport(o Options, out chan Report, kind string, opCount int64, worker Worker) {
     var i int64
-    var err error
-    var start int64
-    var end int64
-    keepGoing := true
-    
-
-    for ; keepGoing ; {
-      for i = 0; i < o.iterations; i++ {
-          key := strconv.FormatInt(i, 10)
-	  doRead := doAction(i, o.readEvery)
-	  doWrite := doAction(i, o.writeEvery)
-	  doIncr := doAction(i, o.incrEvery)
-  
-	  // do work
-	  if doIncr {
-            start = time.Now().UnixNano()	    
-    	    _, err = bucket.Incr(key, 1, 0, 0)
-            end = time.Now().UnixNano()
-            if !o.quiet {
-              out <- Report{false, end-start, err, end-jobStart, "incr"}
-            }
-	  }	  
-	  if doWrite {
-            start = time.Now().UnixNano()
-    	    err = bucket.SetRaw(key, 0, objectVal)
-            end = time.Now().UnixNano()
-            if !o.quiet {
-              out <- Report{false, end-start, err, end-jobStart, "write"}
-            }
-          }
-
-  	  if doRead {
-            start = time.Now().UnixNano()
-  	    _, err = bucket.GetRaw(key)
-            end = time.Now().UnixNano()
-            if !o.quiet {
-	      out <- Report{false, end-start, err, end-jobStart, "read"}
-            }
-  	  }
-
-      }
-
-      if !o.forever {
-         keepGoing = false
-      }
-
+    for i = 0; i < opCount; i++ {
+      key := generateRandomKey(o, kind)
+      sendReport(o, out, doWork(kind, key, worker))
     }
-    if !o.quiet { 
-      out <- Report{true, -1, nil, -1, ""} 
+}
+
+func generateRandomKey(o Options, kind string) string {
+     return generateKey(kind, rand.Int63n(o.keyspace))
+}
+
+func generateKey(kind string, i int64) string {
+     return fmt.Sprintf("%s:%s", kind, i)
+}
+
+func durationElapsed(duration int64, jobStart time.Time, now time.Time) bool {
+     elapsed := now.Unix() - jobStart.Unix()
+     return elapsed > duration
+} 
+
+func fillBucket(o Options, bucket *couchbase.Bucket, objectVal []byte) {
+     var i int64
+     for i = 0; i < o.keyspace; i++ {
+         err := bucket.SetRaw(generateKey("write", i), 0, objectVal)
+	 if err != nil { log.Fatal(err) }
+     }
+}
+
+func actor(jobStart time.Time, objectVal []byte, o Options, bucket *couchbase.Bucket, out chan Report) {
+    for ; !durationElapsed(o.duration, jobStart, time.Now()) ; {
+      doWorkAndSendReport(o, out, "read", o.readCount, func(key string) error {
+          _, err := bucket.GetRaw(key)
+	  return err
+      })
+      doWorkAndSendReport(o, out, "write", o.writeCount, func(key string) error {
+          return bucket.SetRaw(key, 0, objectVal)
+      })
+      doWorkAndSendReport(o, out, "incr", o.incrCount, func(key string) error {
+          _, err := bucket.Incr(key, 1, 0, 0)
+	  return err
+      })
     }
+    out <- Report{true, -1, nil, -1, ""} 
 }
 
 func parseOptions() Options {
@@ -103,14 +112,16 @@ func parseOptions() Options {
      flag.StringVar(&o.url, "url", "http://127.0.0.1:8091/", "URL to Couchbase server")
      flag.StringVar(&o.bucket, "bucket", "default", "Bucket to store the objects into")
      flag.Int64Var(&o.objectSize, "size", 1000, "Size of the object to store")
-     flag.Int64Var(&o.iterations, "iterations", 100000, "Size of the object to store")
-     flag.Int64Var(&o.actors, "actors", 1, "Size of the object to store")
-     flag.IntVar(&o.poolsize, "poolsize", 4, "Size of the object to store")
-     flag.BoolVar(&o.forever, "forever", false, "run forever")
-     flag.Int64Var(&o.readEvery, "readEvery", 0, "read for every X iterations")
-     flag.Int64Var(&o.writeEvery, "writeEvery", 0, "read for every X iterations")
-     flag.Int64Var(&o.incrEvery, "incrEvery", 0, "increment for every X iterations")
+     flag.Int64Var(&o.keyspace, "keyspace", 10000, "Number of unique keys")
+     flag.Int64Var(&o.actors, "actors", 1, "Number of concurrent actors to use")
+     flag.IntVar(&o.poolsize, "poolsize", 4, "Connection pool size")
+     flag.Int64Var(&o.duration, "duration", 300, "duration in seconds (zero to run forever)")
+     flag.Int64Var(&o.readCount, "readCount", 0, "number of reads to do each iteration")
+     flag.Int64Var(&o.writeCount, "writeCount", 0, "number of writes to do each iteration")
+     flag.Int64Var(&o.incrCount, "incrCount", 0, "number of increments to do each iteration")
+     flag.Int64Var(&o.casCount, "casCount", 0, "number of CAS operations to do each iteration")
      flag.BoolVar(&o.quiet, "quiet",  false, "turn off logging for performance")
+     flag.BoolVar(&o.fillBucket, "fillBucket",  false, "fill the bucket before running operations")
      flag.Parse()
      return o;
 }
@@ -132,39 +143,19 @@ func printReportLn(report Report) {
     }
 }
 
-func main() {
+func getBucket(o Options) (*couchbase.Bucket, error) {
+     return couchbase.GetBucket(o.url, "default", o.bucket)
+}
+
+func runActors(o Options, objectVal []byte, bucket *couchbase.Bucket) {
      var i int64
-     log.Printf("Using %d\n CPUs", runtime.NumCPU())
-     runtime.GOMAXPROCS(runtime.NumCPU() * 2)
-     o := parseOptions()
-     couchbase.PoolSize = o.poolsize
-
-     c, err := couchbase.Connect(o.url)
-     if err != nil {
-       log.Fatalf("Error connecting: %v", err)
-     }
-
-     pool, err := c.GetPool("default")
-     if err != nil {
-       log.Fatalf("Error getting pool: %v", err)
-     }
-
-     bucket, err := pool.GetBucket(o.bucket)
-     if err != nil {
-       log.Fatalf("Error getting bucket: %v", err)
-     }
-
-     log.Printf("Couchbase Nodes: %v", bucket.NodeAddresses())
-
-     objectVal := makeObjectVal(o.objectSize)
-
      // the output channel
      out := make(chan Report, 1000 * o.actors)
      runningActors := 0
 
      for i = 0; i < o.actors; i++ {
           log.Printf("Starting actor %d\n", i)
-          go actor(time.Now().UnixNano(), objectVal, bucket, o, out)
+          go actor(time.Now(), objectVal, o, bucket, out)
 	  runningActors++
      }  
 
@@ -179,5 +170,25 @@ func main() {
 	   break
         }
      }
+}
+
+func main() {
+     log.Printf("Using %d\n CPUs", runtime.NumCPU())
+     runtime.GOMAXPROCS(runtime.NumCPU())
+     o := parseOptions()
+     couchbase.PoolSize = o.poolsize
+     bucket, err := getBucket(o)
+     if err != nil {
+       log.Fatalf("Error getting bucket: %v", err)
+     }
+     log.Printf("Couchbase Nodes: %v", bucket.NodeAddresses())
+
+     objectVal := makeObjectVal(o.objectSize)
+     if o.fillBucket {
+        log.Printf("Filling Bucket...")
+        fillBucket(o, bucket, objectVal);
+        log.Printf("Bucket Full...")
+     }
+     runActors(o, objectVal, bucket)
 }
 
