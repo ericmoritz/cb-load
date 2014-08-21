@@ -90,6 +90,7 @@ func fillBucket(o Options, bucket *couchbase.Bucket, objectVal []byte) {
      }
 }
 
+
 func actor(jobStart time.Time, objectVal []byte, o Options, bucket *couchbase.Bucket, out chan Report) {
     for ; !durationElapsed(o.duration, jobStart, time.Now()) ; {
       doWorkAndSendReport(o, out, "read", o.readCount, func(key string) error {
@@ -103,6 +104,13 @@ func actor(jobStart time.Time, objectVal []byte, o Options, bucket *couchbase.Bu
           _, err := bucket.Incr(key, 1, 0, 0)
 	  return err
       })
+      doWorkAndSendReport(o, out, "cas", o.casCount, func(key string) error {
+          return bucket.WriteUpdate(key, 0, func(current []byte) ([]byte, couchbase.WriteOptions, error) {
+	      objectVal[0] = objectVal[0] + 1
+	      return objectVal, 0, nil
+	  })
+      })
+
     }
     out <- Report{true, -1, nil, -1, ""} 
 }
