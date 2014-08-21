@@ -1,3 +1,5 @@
+.PHONY: data
+
 all: deps cb-load
 
 deps:
@@ -9,3 +11,9 @@ cb-load:
 
 clean:
 	rm -f cb-load
+
+data:
+	cat data/oc-jump?/results-read-10k.csv | sed "/elapsed/d" | python bin/crunch_numbers.py data/results-read-10k
+	cat data/oc-jump?/results-read-1k.csv | sed "/elapsed/d" | python bin/crunch_numbers.py data/results-read-1k
+	cat data/oc-jump?/results-write-10k.csv | sed "/elapsed/d" | python bin/crunch_numbers.py data/results-write-10k
+	cat data/oc-jump?/results-write-1k.csv | sed "/elapsed/d" | python bin/crunch_numbers.py data/results-write-1k

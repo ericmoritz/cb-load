@@ -1,3 +1,5 @@
 *~
 cb-load
 *.csv
+.ipynb_checkpoints/
+.venv/

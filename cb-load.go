@@ -24,10 +24,12 @@ type Options struct {
      objectSize int64
      iterations int64
      poolsize int
-     actors int
+     actors int64
      forever bool
      readEvery int64
      writeEvery int64
+     incrEvery int64
+     quiet bool
 }
 
 func makeObjectVal(objectSize int64) []byte {
@@ -55,20 +57,33 @@ func actor(jobStart int64, objectVal []byte, bucket *couchbase.Bucket, o Options
           key := strconv.FormatInt(i, 10)
 	  doRead := doAction(i, o.readEvery)
 	  doWrite := doAction(i, o.writeEvery)
+	  doIncr := doAction(i, o.incrEvery)
   
 	  // do work
+	  if doIncr {
+            start = time.Now().UnixNano()	    
+    	    _, err = bucket.Incr(key, 1, 0, 0)
+            end = time.Now().UnixNano()
+            if !o.quiet {
+              out <- Report{false, end-start, err, end-jobStart, "incr"}
+            }
+	  }	  
 	  if doWrite {
             start = time.Now().UnixNano()
     	    err = bucket.SetRaw(key, 0, objectVal)
             end = time.Now().UnixNano()
-            out <- Report{false, end-start, err, end-jobStart, "write"}
+            if !o.quiet {
+              out <- Report{false, end-start, err, end-jobStart, "write"}
+            }
           }
 
   	  if doRead {
             start = time.Now().UnixNano()
   	    _, err = bucket.GetRaw(key)
             end = time.Now().UnixNano()
-            out <- Report{false, end-start, err, end-jobStart, "read"}
+            if !o.quiet {
+	      out <- Report{false, end-start, err, end-jobStart, "read"}
+            }
   	  }
 
       }
@@ -78,7 +93,9 @@ func actor(jobStart int64, objectVal []byte, bucket *couchbase.Bucket, o Options
       }
 
     }
-    out <- Report{true, -1, nil, -1, ""}
+    if !o.quiet { 
+      out <- Report{true, -1, nil, -1, ""} 
+    }
 }
 
 func parseOptions() Options {
@@ -87,17 +104,19 @@ func parseOptions() Options {
      flag.StringVar(&o.bucket, "bucket", "default", "Bucket to store the objects into")
      flag.Int64Var(&o.objectSize, "size", 1000, "Size of the object to store")
      flag.Int64Var(&o.iterations, "iterations", 100000, "Size of the object to store")
-     flag.IntVar(&o.actors, "actors", 1, "Size of the object to store")
+     flag.Int64Var(&o.actors, "actors", 1, "Size of the object to store")
      flag.IntVar(&o.poolsize, "poolsize", 4, "Size of the object to store")
      flag.BoolVar(&o.forever, "forever", false, "run forever")
-     flag.Int64Var(&o.readEvery, "readEvery", 1, "read for every X iterations")
-     flag.Int64Var(&o.writeEvery, "writeEvery", 1, "read for every X iterations")
+     flag.Int64Var(&o.readEvery, "readEvery", 0, "read for every X iterations")
+     flag.Int64Var(&o.writeEvery, "writeEvery", 0, "read for every X iterations")
+     flag.Int64Var(&o.incrEvery, "incrEvery", 0, "increment for every X iterations")
+     flag.BoolVar(&o.quiet, "quiet",  false, "turn off logging for performance")
      flag.Parse()
      return o;
 }
 
 func printHeader() {
-     fmt.Printf("elapsed, error, timestamp\n");
+     fmt.Printf("elapsed, error, timestamp, type\n");
 }
 
 func printReportLn(report Report) {
@@ -105,7 +124,7 @@ func printReportLn(report Report) {
       fmt.Printf("%d, ", report.elapsedMS)
 
       if report.err != nil {
-         fmt.Printf("%v,", report.err)
+         fmt.Printf("\"%v\", ", report.err)
       } else {
          fmt.Printf(",")
       }
@@ -114,8 +133,9 @@ func printReportLn(report Report) {
 }
 
 func main() {
+     var i int64
      log.Printf("Using %d\n CPUs", runtime.NumCPU())
-     runtime.GOMAXPROCS(runtime.NumCPU())
+     runtime.GOMAXPROCS(runtime.NumCPU() * 2)
      o := parseOptions()
      couchbase.PoolSize = o.poolsize
 
@@ -139,10 +159,10 @@ func main() {
      objectVal := makeObjectVal(o.objectSize)
 
      // the output channel
-     out := make(chan Report, 1000 * o.actors) 
+     out := make(chan Report, 1000 * o.actors)
      runningActors := 0
 
-     for i := 0; i < o.actors; i++ {
+     for i = 0; i < o.actors; i++ {
           log.Printf("Starting actor %d\n", i)
           go actor(time.Now().UnixNano(), objectVal, bucket, o, out)
 	  runningActors++
