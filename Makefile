@@ -1,6 +1,6 @@
 .PHONY: data
 
-all: deps cb-load
+all: deps cb-load cb-jepsen
 
 deps:
 	go get github.com/couchbaselabs/go-couchbase
@@ -9,8 +9,11 @@ deps:
 cb-load:
 	go build -o cb-load cb-load.go
 
+cb-jepsen:
+	go build -o cb-jepsen cb-jepsen.go
+
 clean:
-	rm -f cb-load
+	rm -f cb-load cb-jepsen
 
 data:
 	cat data/oc-jump?/results-read-10k.csv | sed "/elapsed/d" | python bin/crunch_numbers.py data/results-read-10k

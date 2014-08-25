@@ -1,5 +1,6 @@
 *~
 cb-load
+cb-jepsen
 *.csv
 .ipynb_checkpoints/
 .venv/
