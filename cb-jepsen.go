@@ -5,17 +5,19 @@ import (
        "encoding/json"
        "flag"
        "log"
+       "time"
        "github.com/couchbaselabs/go-couchbase"
 )
 
-type Worker func(string) error
+type Worker func() (bool, error)
 
 type Report struct {
      done bool // actor is done
      element string // Set element 
+     timestamp int64 // timestamp
      elapsed int64 // elapsed time to store the record
-     err error // Possible error
      ack bool // if the element was acknowledge
+     err error // Possible error
 }
 
 type Options struct {
@@ -24,6 +26,7 @@ type Options struct {
      key string
      actors int64
      setsize int64
+     mode string
 }
 
 func parseOptions() Options {
@@ -33,14 +36,34 @@ func parseOptions() Options {
      flag.StringVar(&o.key, "key", "jepsen", "The key to use for the set")
      flag.Int64Var(&o.actors, "actors", 5, "Number of concurrent actors to use")
      flag.Int64Var(&o.setsize, "setsize", 2000, "Number of items in the set")
+     flag.StringVar(&o.mode, "mode", "cas", "cas | naive; naive is without CAS")
      flag.Parse()
+     if o.mode != "cas" && o.mode != "naive" {
+        log.Fatalf("mode can only be \"cas\" or \"naive\", you gave %s", o.mode)
+     }
      return o;
 }
 
 
+func printHeader() {
+     fmt.Printf("element, ack, elapsed, timestamp, error\n")
+}
+
 func printReportLn(report Report) {
+    var errorStr string
+    var ackInt int    
+    if report.err == nil {
+        errorStr = ""
+    } else {
+        errorStr = fmt.Sprintf("%v", report.err)
+    }
+    if report.ack {
+       ackInt = 1
+    } else {
+       ackInt = 0
+    } 
     if !report.done {
-        log.Printf("%s %t %v", report.element, report.ack, report.err)
+        fmt.Printf("\"%s\", %d, %d, %d, \"%s\"\n", report.element, ackInt, report.elapsed, report.timestamp, errorStr, )
     }
 }
 
@@ -48,22 +71,51 @@ func getBucket(o Options) (*couchbase.Bucket, error) {
      return couchbase.GetBucket(o.url, "default", o.bucket)
 }
 
+
+func doWork(element string, worker Worker) Report {
+ start := time.Now().UnixNano()
+ ack, err := worker()
+ end := time.Now().UnixNano()
+ return Report{false, element, end, end-start, ack, err}
+}
+
+
 func actor(o Options, bucket *couchbase.Bucket, out chan Report, actorID int64) {
      var i int64
      var err error
+
      hashSet := make(map[string]bool)
      
      for i = actorID; i < o.setsize; i += o.actors {
          element := fmt.Sprintf("%d", i)
-         // update the hashset
-	 err = bucket.Update(o.key, 0, func(current []byte) ([]byte, error) {
-             json.Unmarshal(current, &hashSet)
+
+	 casWork := func() (bool, error) {
+             err = bucket.Update(o.key, 0, func(current []byte) ([]byte, error) {
+                 json.Unmarshal(current, &hashSet)
+	         hashSet[element] = true
+	         return json.Marshal(&hashSet)
+	     })
+	     return err == nil, err
+     	 }
+
+         naiveWork := func()(bool, error) {
+             err = bucket.Get(o.key, &hashSet)
+	     if err != nil {
+	         return false, err
+	     }
 	     hashSet[element] = true
-	     return json.Marshal(&hashSet)
-	 })
-	 out <- Report{false, element, -1, err, err == nil}
+	     err = bucket.Set(o.key, 0, &hashSet)
+	     return err == nil, err
+     	 }
+
+         // update the hashset
+	 if o.mode == "naive" {
+             out <- doWork(element, naiveWork)
+	 } else {
+             out <- doWork(element, casWork)
+         }
      }
-     out <- Report{true, "", -1, nil, false}      
+     out <- Report{true, "", -1, -1, false, nil}      
 }
 
 
