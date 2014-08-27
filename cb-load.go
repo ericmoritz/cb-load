@@ -34,6 +34,7 @@ type Options struct {
      casCount int64
      quiet bool
      fillBucket bool
+     persist bool
 }
 
 func makeObjectVal(objectSize int64) []byte {
@@ -92,13 +93,20 @@ func fillBucket(o Options, bucket *couchbase.Bucket, objectVal []byte) {
 
 
 func actor(jobStart time.Time, objectVal []byte, o Options, bucket *couchbase.Bucket, out chan Report) {
+     var writeOptions couchbase.WriteOptions
+     if o.persist {
+         writeOptions = couchbase.Persist
+     } else {
+         writeOptions = 0
+     }
+
     for ; !durationElapsed(o.duration, jobStart, time.Now()) ; {
       doWorkAndSendReport(o, out, "read", o.readCount, func(key string) error {
           _, err := bucket.GetRaw(key)
 	  return err
       })
       doWorkAndSendReport(o, out, "write", o.writeCount, func(key string) error {
-          return bucket.SetRaw(key, 0, objectVal)
+          return bucket.Write(key, 0, 0, objectVal, writeOptions | couchbase.Raw)
       })
       doWorkAndSendReport(o, out, "incr", o.incrCount, func(key string) error {
           _, err := bucket.Incr(key, 1, 0, 0)
@@ -107,7 +115,7 @@ func actor(jobStart time.Time, objectVal []byte, o Options, bucket *couchbase.Bu
       doWorkAndSendReport(o, out, "cas", o.casCount, func(key string) error {
           return bucket.WriteUpdate(key, 0, func(current []byte) ([]byte, couchbase.WriteOptions, error) {
 	      objectVal[0] = objectVal[0] + 1
-	      return objectVal, 0, nil
+	      return objectVal, writeOptions, nil
 	  })
       })
 
@@ -130,6 +138,7 @@ func parseOptions() Options {
      flag.Int64Var(&o.casCount, "casCount", 0, "number of CAS operations to do each iteration")
      flag.BoolVar(&o.quiet, "quiet",  false, "turn off logging for performance")
      flag.BoolVar(&o.fillBucket, "fillBucket",  false, "fill the bucket before running operations")
+     flag.BoolVar(&o.persist, "persist",  false, "wait for persistance")
      flag.Parse()
      return o;
 }
