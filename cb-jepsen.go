@@ -274,7 +274,6 @@ func main() {
         replicas[id] = serverMap.ServerList[id]
      }
      log.Printf("Nodes for '%s': %v", o.key, replicas)
-     return
      runActors(o, bucket)
 }
 
