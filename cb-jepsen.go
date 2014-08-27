@@ -27,6 +27,7 @@ type Options struct {
      actors int64
      setsize int64
      mode string
+     persist bool
 }
 
 func parseOptions() Options {
@@ -36,10 +37,11 @@ func parseOptions() Options {
      flag.StringVar(&o.key, "key", "jepsen", "The key to use for the set")
      flag.Int64Var(&o.actors, "actors", 5, "Number of concurrent actors to use")
      flag.Int64Var(&o.setsize, "setsize", 2000, "Number of items in the set")
-     flag.StringVar(&o.mode, "mode", "cas", "cas | naive; naive is without CAS")
+     flag.StringVar(&o.mode, "mode", "cas", "incr | cas | naive; naive is without CAS")
+     flag.BoolVar(&o.persist, "persist", false, "wait for persistance")
      flag.Parse()
-     if o.mode != "cas" && o.mode != "naive" {
-        log.Fatalf("mode can only be \"cas\" or \"naive\", you gave %s", o.mode)
+     if o.mode != "cas" && o.mode != "naive" && o.mode != "incr" {
+        log.Fatalf("mode can only be \"incr\", \"cas\" or \"naive\", you gave %s", o.mode)
      }
      return o;
 }
@@ -83,17 +85,30 @@ func doWork(element string, worker Worker) Report {
 func actor(o Options, bucket *couchbase.Bucket, out chan Report, actorID int64) {
      var i int64
      var err error
+     var writeOptions couchbase.WriteOptions
 
      hashSet := make(map[string]bool)
-     
+     if o.persist {
+        writeOptions = couchbase.Persist
+     } else {
+	writeOptions = 0
+     }
+
      for i = actorID; i < o.setsize; i += o.actors {
          element := fmt.Sprintf("%d", i)
 
+	 incrWork := func() (bool, error) {
+	    _, err := bucket.Incr(o.key, 1, 0, 0)
+	    return err == nil, err
+	 }	 
+
 	 casWork := func() (bool, error) {
-             err = bucket.Update(o.key, 0, func(current []byte) ([]byte, error) {
+             err = bucket.WriteUpdate(o.key, 0, func(current []byte) ([]byte, couchbase.WriteOptions, error) {
+	         var updated []byte
                  json.Unmarshal(current, &hashSet)
 	         hashSet[element] = true
-	         return json.Marshal(&hashSet)
+	         updated, err = json.Marshal(&hashSet)
+		 return updated, writeOptions, err
 	     })
 	     return err == nil, err
      	 }
@@ -104,12 +119,14 @@ func actor(o Options, bucket *couchbase.Bucket, out chan Report, actorID int64) 
 	         return false, err
 	     }
 	     hashSet[element] = true
-	     err = bucket.Set(o.key, 0, &hashSet)
+	     err = bucket.Write(o.key, 0, 0, &hashSet, writeOptions)
 	     return err == nil, err
      	 }
 
          // update the hashset
-	 if o.mode == "naive" {
+	 if o.mode == "incr" {
+	     out <- doWork(element, incrWork)
+	 } else if o.mode == "naive" {
              out <- doWork(element, naiveWork)
 	 } else {
              out <- doWork(element, casWork)
@@ -122,6 +139,7 @@ func actor(o Options, bucket *couchbase.Bucket, out chan Report, actorID int64) 
 func runActors(o Options, bucket *couchbase.Bucket) {
      var err error
      var i int64
+     var counter int64
      reportSet := make(map[string]Report)
      hashSet := make(map[string]bool)
 
@@ -130,7 +148,12 @@ func runActors(o Options, bucket *couchbase.Bucket) {
      runningActors := 0
 
      // Initalize the value
-     err = bucket.Set(o.key, 0, &hashSet)
+     if o.mode == "incr" {
+          err = bucket.Set(o.key, 0, 0)
+     } else {
+          err = bucket.Set(o.key, 0, &hashSet)
+     }    
+
      if err != nil {
        log.Fatalf("Unable to initialize the value: %v", err)
      }
@@ -157,15 +180,45 @@ func runActors(o Options, bucket *couchbase.Bucket) {
        }
      }
 
-     err = bucket.Get(o.key, &hashSet)
-     if err != nil {
-         log.Fatalf("Error getting the remote set: %v", err)
-     }
 
-     analyzeSet(o, reportSet, hashSet)
+     if o.mode == "incr" {
+        err = bucket.Get(o.key, &counter)
+        if err != nil {
+           log.Fatalf("Error getting the remote set: %v", err)
+        }
+        analyzeCount(o, reportSet, counter)
+     } else {
+        err = bucket.Get(o.key, &hashSet)
+        if err != nil {
+           log.Fatalf("Error getting the remote set: %v", err)
+        }
+        analyzeSet(o, reportSet, hashSet)
+    }
+}
+
+func analyzeCount(o Options, reportSet map[string]Report, count int64) {
+     var acknowledged int64
+     var total int64
+     var i int64
+
+     for i = 0; i < o.setsize; i++ {
+        // was the element acked?
+	element := fmt.Sprintf("%d", i)
+	if _, ok := reportSet[element]; ok {
+	   total++
+	}
+	if reportSet[element].ack {
+            acknowledged++
+        }	
+     }
+          
+     log.Printf("%d total", total)
+     log.Printf("%d total loss", total - count)
+     log.Printf("%d acknowledged", acknowledged)
 }
 
 func analyzeSet(o Options, reportSet map[string]Report, hashSet map[string]bool) {
+     var total int64
      var acknowledged int64
      var ackAndFound int64
      var ackButLost int64
@@ -176,6 +229,10 @@ func analyzeSet(o Options, reportSet map[string]Report, hashSet map[string]bool)
      for i = 0; i < o.setsize; i++ {
         // was the element acked?
 	element := fmt.Sprintf("%d", i)
+	if _, ok := reportSet[element]; ok {
+	    total++
+	}
+
 	if reportSet[element].ack {
 	    acknowledged++
 
@@ -190,7 +247,7 @@ func analyzeSet(o Options, reportSet map[string]Report, hashSet map[string]bool)
 	   completelyLost++
 	}
      }
-     log.Printf("%d total", o.setsize)
+     log.Printf("%d total", total)
      log.Printf("%d total loss", completelyLost + ackButLost)
 
      log.Printf("%d acknowledged", acknowledged)
