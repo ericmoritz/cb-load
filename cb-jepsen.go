@@ -261,10 +261,20 @@ func analyzeSet(o Options, reportSet map[string]Report, hashSet map[string]bool)
 func main() {
      o := parseOptions()
      bucket, err := getBucket(o)
+
      if err != nil {
        log.Fatalf("Error getting bucket: %v", err)
      }
      log.Printf("Couchbase Nodes: %v", bucket.NodeAddresses())
+     vbucket := bucket.VBHash(o.key)
+     serverMap := bucket.VBServerMap()
+     node_ids := serverMap.VBucketMap[vbucket]
+     replicas := make([]string, len(node_ids))
+     for id := range node_ids {
+        replicas[id] = serverMap.ServerList[id]
+     }
+     log.Printf("Nodes for '%s': %v", o.key, replicas)
+     return
      runActors(o, bucket)
 }
 
