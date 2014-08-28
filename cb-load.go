@@ -157,7 +157,7 @@ func printReportLn(report Report) {
       } else {
          fmt.Printf(",")
       }
-      fmt.Printf("%d, %s, %s\n", report.timestamp, report.op, report.key)
+      fmt.Printf("%d, %s, %s, %s\n", report.timestamp, report.op, report.key)
     }
 }
 
