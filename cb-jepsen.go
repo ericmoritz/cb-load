@@ -189,10 +189,20 @@ func runActors(o Options, bucket *couchbase.Bucket) {
         }
         analyzeCount(o, reportSet, counter)
      } else {
-        err = bucket.Get(o.key, &hashSet)
-        if err != nil {
-           log.Fatalf("Error getting the remote set: %v", err)
-        }
+        start := time.Now()
+
+        for {
+            err = bucket.Get(o.key, &hashSet)
+            if err != nil {
+	        log.Printf("Error getting the remote set: %v, retrying",
+		    err)
+            } else {
+	        log.Printf("Retrieved remote set after %s seconds",
+		  time.Since(start) * time.Second)
+	        break
+	    }
+	}    
+	
         analyzeSet(o, reportSet, hashSet)
     }
 }
