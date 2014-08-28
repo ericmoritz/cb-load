@@ -76,7 +76,7 @@ func generateRandomKey(o Options, kind string) string {
 }
 
 func generateKey(kind string, i int64) string {
-     return fmt.Sprintf("%s:%s", kind, i)
+     return fmt.Sprintf("%s:%d", kind, i)
 }
 
 func durationElapsed(duration int64, jobStart time.Time, now time.Time) bool {
@@ -157,7 +157,7 @@ func printReportLn(report Report) {
       } else {
          fmt.Printf(",")
       }
-      fmt.Printf("%d, %s, %s, %s\n", report.timestamp, report.op, report.key)
+      fmt.Printf("%d, %s, %s\n", report.timestamp, report.op, report.key)
     }
 }
 
