@@ -166,6 +166,7 @@ func runActors(o Options, bucket *couchbase.Bucket) {
      }
 
      // Receive the reports from the actors
+     printHeader()
      for {
         report := <-out
 

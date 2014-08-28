@@ -18,6 +18,7 @@ type Report struct {
      err error
      timestamp int64
      op string
+     key string
 }
 
 type Options struct {
@@ -53,7 +54,7 @@ func doWork(kind string, key string, worker Worker) Report {
  start := time.Now().UnixNano()
  err := worker(key)
  end := time.Now().UnixNano()
- return Report{false, end-start, err, end, kind}
+ return Report{false, end-start, err, end, kind, key}
 }
 
 func sendReport(o Options, out chan Report, report Report) {
@@ -120,7 +121,7 @@ func actor(jobStart time.Time, objectVal []byte, o Options, bucket *couchbase.Bu
       })
 
     }
-    out <- Report{true, -1, nil, -1, ""} 
+    out <- Report{true, -1, nil, -1, "", ""} 
 }
 
 func parseOptions() Options {
@@ -144,7 +145,7 @@ func parseOptions() Options {
 }
 
 func printHeader() {
-     fmt.Printf("elapsed, error, timestamp, type\n");
+     fmt.Printf("elapsed, error, timestamp, type, key\n");
 }
 
 func printReportLn(report Report) {
@@ -156,7 +157,7 @@ func printReportLn(report Report) {
       } else {
          fmt.Printf(",")
       }
-      fmt.Printf("%d, %s\n", report.timestamp, report.op)
+      fmt.Printf("%d, %s, %s\n", report.timestamp, report.op, report.key)
     }
 }
 
