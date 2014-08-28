@@ -76,6 +76,9 @@ func generateRandomKey(o Options, kind string) string {
 }
 
 func generateKey(kind string, i int64) string {
+     if kind == "write" || kind == "read" {
+         kind = "readWrite"
+     }
      return fmt.Sprintf("%s:%d", kind, i)
 }
 
